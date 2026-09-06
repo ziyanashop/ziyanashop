@@ -392,7 +392,6 @@ const defaults = {
     },
   ],
 };
-const logoImageUrl = "/ziyana-logo.png";
 const load = (key, fallback) => {
   try {
     return JSON.parse(localStorage.getItem(key)) ?? fallback;
@@ -538,7 +537,7 @@ function Header({ cart, wishlist }) {
             go("/");
           }}
         >
-          <img className="brand-logo" src={logoImageUrl} alt="ZiyanaShop" />
+          Ziyana<span>Shop</span>
         </a>
         <nav>
           <a href="/shop">Shop</a>
@@ -583,7 +582,7 @@ function Header({ cart, wishlist }) {
               <X />
             </button>
             <div className="drawer-logo">
-              <img className="brand-logo" src={logoImageUrl} alt="ZiyanaShop" />
+              Ziyana<span>Shop</span>
             </div>
             {[
               "Shop",
@@ -614,7 +613,7 @@ function Footer() {
       <div className="footer-grid">
         <div>
           <div className="logo">
-            <img className="brand-logo" src={logoImageUrl} alt="ZiyanaShop" />
+            Ziyana<span>Shop</span>
           </div>
           <p>
             Thoughtfully chosen pieces for your everyday, delivered across
@@ -2181,6 +2180,6 @@ function Root() {
   return ready ? <AppWithAccount /> : <LoadingScreen label="Loading ZiyanaShop" />;
 }
 function LoadingScreen({ label = "Loading" }) {
-  return <main className="loading-screen" role="status" aria-live="polite"><span className="loading-mark"><img src={logoImageUrl} alt="" /><span className="loading-spinner" /></span><span>{label}</span></main>;
+  return <main className="loading-screen" role="status" aria-live="polite"><span className="loading-mark"><span className="loading-brand">Z<span>Shop</span></span><span className="loading-spinner" /></span><span>{label}</span></main>;
 }
 createRoot(document.getElementById("root")).render(<Root />);
