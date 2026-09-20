@@ -1,33 +1,63 @@
-// Shared login router: one login page, one forwarded port, automatic user/admin routing.
-// This is a client-side development convenience. Production authentication should be server-side.
-const ADMIN_USERNAME = String(import.meta.env.VITE_ADMIN_USERNAME || "").trim().toLowerCase();
-const ADMIN_PASSWORD = String(import.meta.env.VITE_ADMIN_PASSWORD || "").trim();
+// Shared login router: one login page, one forwarded port, Google-Sheets role authentication.
+// Authentication is verified by the Google Apps Script endpoint; passwords are never read from the sheet by the browser.
+const API_URL = String(import.meta.env.VITE_API_URL || "").trim();
 
 const read = (key, fallback = null) => {
   try { return JSON.parse(localStorage.getItem(key) || "null") ?? fallback; }
   catch { return fallback; }
 };
 
-const goAdmin = () => {
-  localStorage.setItem("ziyana-admin-session", JSON.stringify({
-    username: ADMIN_USERNAME,
-    role: "admin",
-    at: Date.now(),
-  }));
-  localStorage.setItem("ziyana-current-user", JSON.stringify({
-    name: "Administrator",
-    email: ADMIN_USERNAME,
-    username: ADMIN_USERNAME,
-    role: "admin",
-  }));
-  window.history.pushState({}, "", "/admin");
+const save = (key, value) => localStorage.setItem(key, JSON.stringify(value));
+
+const route = (path) => {
+  window.history.pushState({}, "", path);
   window.dispatchEvent(new PopStateEvent("popstate"));
 };
 
-const isAdminCredentials = (identity, password) =>
-  Boolean(ADMIN_USERNAME && ADMIN_PASSWORD) &&
-  String(identity || "").trim().toLowerCase() === ADMIN_USERNAME &&
-  String(password || "").trim() === ADMIN_PASSWORD;
+const setAdminSession = (user) => {
+  save("ziyana-admin-session", {
+    username: user.identifier,
+    role: "admin",
+    at: Date.now(),
+  });
+  save("ziyana-current-user", {
+    name: user.name || "Administrator",
+    email: user.identifier,
+    username: user.identifier,
+    role: "admin",
+  });
+  route("/admin");
+};
+
+const setUserSession = (user) => {
+  const identifier = String(user.identifier || "").trim();
+  const localUsers = read("ziyana-users", []);
+  const existing = localUsers.find((item) => item.email === identifier.toLowerCase() || item.phone === identifier);
+  const sessionUser = existing || {
+    name: user.name || "Customer",
+    email: identifier.includes("@") ? identifier.toLowerCase() : "",
+    phone: identifier.includes("@") ? "" : identifier,
+    role: "user",
+    addresses: [],
+  };
+  save("ziyana-current-user", { ...sessionUser, role: "user" });
+  route("/account");
+};
+
+const authenticateRemote = async (identity, password) => {
+  if (!API_URL) return null;
+  try {
+    const response = await fetch(API_URL, {
+      method: "POST",
+      headers: { "Content-Type": "text/plain;charset=utf-8" },
+      body: JSON.stringify({ action: "authenticate", identifier: identity, password }),
+    });
+    if (!response.ok) return null;
+    return await response.json();
+  } catch {
+    return null;
+  }
+};
 
 const getLoginFields = (form) => {
   const inputs = [...form.querySelectorAll("input")];
@@ -39,22 +69,52 @@ const getLoginFields = (form) => {
   };
 };
 
-const routeAdmin = (form) => {
+const showError = (form, message) => {
+  const existing = form.querySelector(".error");
+  if (existing) {
+    existing.textContent = message;
+    return;
+  }
+  const p = document.createElement("p");
+  p.className = "error";
+  p.textContent = message;
+  const button = form.querySelector("button[type=submit], button:not([type])");
+  if (button) form.insertBefore(p, button);
+};
+
+const authenticateAndRoute = async (form, event) => {
   const { identity, password } = getLoginFields(form);
-  if (!isAdminCredentials(identity, password)) return false;
-  goAdmin();
+  if (!identity || !password) return false;
+  if (form.dataset.authBusy === "1") return true;
+  form.dataset.authBusy = "1";
+  event?.preventDefault();
+  event?.stopImmediatePropagation();
+
+  const button = form.querySelector("button[type=submit], button:not([type])");
+  const original = button?.textContent;
+  if (button) { button.disabled = true; button.textContent = "Signing in…"; }
+
+  const result = await authenticateRemote(identity, password);
+  if (result?.ok && result.user?.role === "admin") {
+    setAdminSession(result.user);
+    return true;
+  }
+  if (result?.ok && result.user?.role === "user") {
+    setUserSession(result.user);
+    return true;
+  }
+
+  form.dataset.authBusy = "0";
+  if (button) { button.disabled = false; button.textContent = original || "Sign in"; }
+  showError(form, result?.error || "Unable to sign in. Check your account and try again.");
   return true;
 };
 
-// React owns the form submit, so bind in capture phase and also guard the submit button click.
 const bindForm = (form) => {
   if (!(form instanceof HTMLFormElement) || form.dataset.adminRouterBound === "1") return;
   form.dataset.adminRouterBound = "1";
   form.addEventListener("submit", (event) => {
-    if (routeAdmin(form)) {
-      event.preventDefault();
-      event.stopImmediatePropagation();
-    }
+    if (location.pathname === "/login") authenticateAndRoute(form, event);
   }, true);
 };
 
@@ -62,18 +122,6 @@ const scanLogin = () => {
   if (location.pathname !== "/login") return;
   document.querySelectorAll("form").forEach(bindForm);
 };
-
-// Button-click fallback guarantees the admin route wins before React's onSubmit validation.
-document.addEventListener("click", (event) => {
-  if (location.pathname !== "/login") return;
-  const button = event.target?.closest?.("form button[type=submit], form button:not([type])");
-  if (!button) return;
-  const form = button.closest("form");
-  if (form && routeAdmin(form)) {
-    event.preventDefault();
-    event.stopImmediatePropagation();
-  }
-}, true);
 
 scanLogin();
 new MutationObserver(scanLogin).observe(document.documentElement, { childList: true, subtree: true });
