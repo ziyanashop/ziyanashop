@@ -1,12 +1,14 @@
 {
   "name": "ziyanashop",
   "private": true,
-  "version": "1.0.0",
+  "version": "1.1.0",
   "type": "module",
   "scripts": {
     "dev": "vite",
+    "dev:admin": "vite --host 0.0.0.0 --port 5174",
     "build": "vite build",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "build:check": "vite build"
   },
   "dependencies": {
     "@vitejs/plugin-react": "latest",
