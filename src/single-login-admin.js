@@ -1,132 +1,119 @@
-// Shared login router: one login page, one forwarded port, Google-Sheets role authentication.
-// Authentication is verified by the Google Apps Script endpoint; passwords are never read from the sheet by the browser.
-const API_URL = String(import.meta.env.VITE_API_URL || "").trim();
+// Single authentication gateway: one /login, one forwarded port, role-aware routing.
+// Google Apps Script is the source of truth for authentication and roles.
+const API_URL = String(import.meta.env.VITE_API_URL || '').trim();
 
 const read = (key, fallback = null) => {
-  try { return JSON.parse(localStorage.getItem(key) || "null") ?? fallback; }
-  catch { return fallback; }
+  try { return JSON.parse(localStorage.getItem(key) || 'null') ?? fallback; } catch { return fallback; }
 };
-
 const save = (key, value) => localStorage.setItem(key, JSON.stringify(value));
 
+const appPrefix = () => {
+  const path = window.location.pathname;
+  return path.startsWith('/ziyanashop/') ? '/ziyanashop' : '';
+};
 const route = (path) => {
-  window.history.pushState({}, "", path);
-  window.dispatchEvent(new PopStateEvent("popstate"));
+  const target = `${appPrefix()}${path}` || '/';
+  window.location.assign(target);
 };
 
 const setAdminSession = (user) => {
-  save("ziyana-admin-session", {
-    username: user.identifier,
-    role: "admin",
-    at: Date.now(),
-  });
-  save("ziyana-current-user", {
-    name: user.name || "Administrator",
-    email: user.identifier,
-    username: user.identifier,
-    role: "admin",
-  });
-  route("/admin");
+  save('ziyana-admin-session', { username: user.identifier, role: 'admin', name: user.name || 'Administrator', at: Date.now() });
+  save('ziyana-current-user', { name: user.name || 'Administrator', email: user.identifier, username: user.identifier, role: 'admin' });
+  route('/admin');
 };
 
 const setUserSession = (user) => {
-  const identifier = String(user.identifier || "").trim();
-  const localUsers = read("ziyana-users", []);
-  const existing = localUsers.find((item) => item.email === identifier.toLowerCase() || item.phone === identifier);
-  const sessionUser = existing || {
-    name: user.name || "Customer",
-    email: identifier.includes("@") ? identifier.toLowerCase() : "",
-    phone: identifier.includes("@") ? "" : identifier,
-    role: "user",
-    addresses: [],
+  const identifier = String(user.identifier || '').trim();
+  const sessionUser = {
+    ...user,
+    name: user.name || 'Customer',
+    email: user.email || (identifier.includes('@') ? identifier.toLowerCase() : ''),
+    phone: user.phone || (identifier.includes('@') ? '' : identifier),
+    role: 'user',
+    addresses: Array.isArray(user.addresses) ? user.addresses : [],
   };
-  save("ziyana-current-user", { ...sessionUser, role: "user" });
-  route("/account");
+  save('ziyana-current-user', sessionUser);
+  const users = read('ziyana-users', []);
+  const index = users.findIndex((item) => item.email === sessionUser.email || item.phone === sessionUser.phone);
+  if (index >= 0) users[index] = { ...users[index], ...sessionUser };
+  else users.push(sessionUser);
+  save('ziyana-users', users);
+  route('/account');
 };
 
 const authenticateRemote = async (identity, password) => {
-  if (!API_URL) return null;
+  if (!API_URL) return { ok: false, error: 'Authentication service is not configured. Set VITE_API_URL and restart Vite.' };
   try {
     const response = await fetch(API_URL, {
-      method: "POST",
-      headers: { "Content-Type": "text/plain;charset=utf-8" },
-      body: JSON.stringify({ action: "authenticate", identifier: identity, password }),
+      method: 'POST',
+      headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+      body: JSON.stringify({ action: 'authenticate', identifier: identity, password }),
     });
-    if (!response.ok) return null;
-    return await response.json();
+    const result = await response.json().catch(() => null);
+    if (!response.ok) return { ok: false, error: result?.error || 'Authentication service unavailable.' };
+    return result || { ok: false, error: 'Authentication service returned an invalid response.' };
   } catch {
-    return null;
+    return { ok: false, error: 'Could not reach the authentication service. Check VITE_API_URL and the Apps Script deployment.' };
   }
 };
 
 const getLoginFields = (form) => {
-  const inputs = [...form.querySelectorAll("input")];
-  const passwordInput = inputs.find((input) => input.type === "password");
+  const inputs = [...form.querySelectorAll('input')];
+  const passwordInput = inputs.find((input) => input.type === 'password');
   const identityInput = inputs.find((input) => input !== passwordInput);
-  return {
-    identity: identityInput?.value || "",
-    password: passwordInput?.value || "",
-  };
+  return { identity: identityInput?.value?.trim() || '', password: passwordInput?.value || '' };
 };
 
 const showError = (form, message) => {
-  const existing = form.querySelector(".error");
-  if (existing) {
-    existing.textContent = message;
-    return;
-  }
-  const p = document.createElement("p");
-  p.className = "error";
+  const existing = form.querySelector('.error');
+  if (existing) { existing.textContent = message; return; }
+  const p = document.createElement('p');
+  p.className = 'error';
   p.textContent = message;
-  const button = form.querySelector("button[type=submit], button:not([type])");
+  const button = form.querySelector('button[type=submit], button:not([type])');
   if (button) form.insertBefore(p, button);
 };
 
 const authenticateAndRoute = async (form, event) => {
+  const submitterText = String(event.submitter?.textContent || '').toLowerCase();
+  // Let the existing React handler handle password-reset submissions.
+  if (submitterText.includes('update password')) return;
   const { identity, password } = getLoginFields(form);
-  if (!identity || !password) return false;
-  if (form.dataset.authBusy === "1") return true;
-  form.dataset.authBusy = "1";
-  event?.preventDefault();
-  event?.stopImmediatePropagation();
+  if (!identity || !password) return;
+  event.preventDefault();
+  event.stopImmediatePropagation();
+  if (form.dataset.authBusy === '1') return;
+  form.dataset.authBusy = '1';
 
-  const button = form.querySelector("button[type=submit], button:not([type])");
+  const button = form.querySelector('button[type=submit], button:not([type])');
   const original = button?.textContent;
-  if (button) { button.disabled = true; button.textContent = "Signing in…"; }
+  if (button) { button.disabled = true; button.textContent = 'Signing in…'; }
 
   const result = await authenticateRemote(identity, password);
-  if (result?.ok && result.user?.role === "admin") {
-    setAdminSession(result.user);
-    return true;
-  }
-  if (result?.ok && result.user?.role === "user") {
-    setUserSession(result.user);
-    return true;
-  }
+  if (result?.ok && String(result.user?.role).toLowerCase() === 'admin') return setAdminSession(result.user);
+  if (result?.ok && String(result.user?.role).toLowerCase() === 'user') return setUserSession(result.user);
 
-  form.dataset.authBusy = "0";
-  if (button) { button.disabled = false; button.textContent = original || "Sign in"; }
-  showError(form, result?.error || "Unable to sign in. Check your account and try again.");
-  return true;
+  form.dataset.authBusy = '0';
+  if (button) { button.disabled = false; button.textContent = original || 'Sign in'; }
+  showError(form, result?.error || 'Email/phone or password is incorrect.');
 };
 
 const bindForm = (form) => {
-  if (!(form instanceof HTMLFormElement) || form.dataset.adminRouterBound === "1") return;
-  form.dataset.adminRouterBound = "1";
-  form.addEventListener("submit", (event) => {
-    if (location.pathname === "/login") authenticateAndRoute(form, event);
+  if (!(form instanceof HTMLFormElement) || form.dataset.authRouterBound === '1') return;
+  form.dataset.authRouterBound = '1';
+  form.addEventListener('submit', (event) => {
+    if (window.location.pathname.endsWith('/login') || window.location.pathname === '/login') authenticateAndRoute(form, event);
   }, true);
 };
 
 const scanLogin = () => {
-  if (location.pathname !== "/login") return;
-  document.querySelectorAll("form").forEach(bindForm);
+  if (!window.location.pathname.endsWith('/login') && window.location.pathname !== '/login') return;
+  document.querySelectorAll('form.auth-form').forEach(bindForm);
 };
-
 scanLogin();
 new MutationObserver(scanLogin).observe(document.documentElement, { childList: true, subtree: true });
 
-if (location.pathname === "/admin" && read("ziyana-admin-session")?.role !== "admin") {
-  window.history.replaceState({}, "", "/login");
-  window.dispatchEvent(new PopStateEvent("popstate"));
+// Never expose the admin panel unless an authenticated admin session exists.
+if ((window.location.pathname === '/admin' || window.location.pathname.endsWith('/admin')) && read('ziyana-admin-session')?.role !== 'admin') {
+  route('/login');
 }
