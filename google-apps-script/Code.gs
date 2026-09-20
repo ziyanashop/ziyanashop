@@ -1,52 +1,57 @@
 const SHEETS = {
+  auth: '00_Auth_Users',
   settings: '01_Settings',
   products: '02_Products',
   customers: '06_Customers',
   orders: '07_Orders',
   coupons: '11_Coupons',
+  campaigns: '12_Campaigns',
   payments: '13_Payments',
   tracking: '15_Tracking',
   expenses: '16_Expenses',
-  campaigns: '17_Sales_Report',
-  auth: '00_Auth_Users',
+  salesReports: '17_Sales_Report',
 };
 
 const SHEET_HEADERS = {
+  auth: ['identifier', 'passwordHash', 'role', 'name', 'active', 'createdAt', 'updatedAt'],
   settings: ['inside', 'outside', 'threshold', 'freeShippingEnabled', 'freeShippingItems', 'freeShippingCampaignOnly', 'insideEta', 'outsideEta', 'payments', 'coupons', 'campaigns'],
   products: ['id', 'name', 'category', 'costPrice', 'price', 'originalPrice', 'discount', 'discountPercent', 'stock', 'image', 'video', 'description', 'rating', 'reviews', 'colors', 'sizes', 'featured', 'newArrival', 'bestSeller'],
   customers: ['name', 'phone', 'email', 'password', 'district', 'area', 'address', 'postal', 'addresses', 'createdAt', 'updatedAt'],
   orders: ['name', 'phone', 'email', 'district', 'area', 'address', 'postal', 'items', 'payment', 'subtotal', 'productDiscount', 'shipping', 'couponDiscount', 'total', 'free', 'estimated', 'number', 'date', 'status', 'paymentStatus', 'step', 'courier', 'trackingNumber', 'trackingUrl'],
   coupons: ['code', 'type', 'value', 'min', 'active'],
+  campaigns: ['id', 'title', 'description', 'image', 'token', 'categories', 'products', 'discountType', 'discountValue', 'freeShipping', 'freeProductId', 'active', 'startDate', 'endDate', 'createdAt', 'updatedAt'],
   payments: ['orderNumber', 'method', 'amount', 'status', 'transactionId', 'phone', 'createdAt', 'updatedAt'],
   tracking: ['orderNumber', 'number', 'status', 'step', 'courier', 'trackingNumber', 'trackingUrl', 'createdAt', 'updatedAt'],
   expenses: ['category', 'amount', 'description', 'date'],
-  campaigns: ['number', 'date', 'name', 'phone', 'subtotal', 'shipping', 'total', 'payment', 'status', 'items', 'createdAt'],
-  auth: ['identifier', 'passwordHash', 'role', 'name', 'active', 'createdAt', 'updatedAt'],
+  salesReports: ['number', 'date', 'name', 'phone', 'subtotal', 'shipping', 'total', 'payment', 'status', 'items', 'createdAt'],
 };
 
-// One-time setup: run setupAuthSheet() from Apps Script after deploying this file.
-// It creates the auth sheet and seeds the temporary admin account. Change the row later in Sheets.
 function setupAuthSheet() {
   const sheet = getSheet_('auth');
   const headers = SHEET_HEADERS.auth;
   sheet.clearContents();
   sheet.getRange(1, 1, 1, headers.length).setValues([headers]);
-  const adminIdentifier = 'zakirhossan97@gmail.com';
-  const adminPassword = 'Admin@123456';
   const now = new Date().toISOString();
-  sheet.getRange(2, 1, 1, headers.length).setValues([[
-    adminIdentifier,
-    hashPassword_(adminPassword),
-    'admin',
-    'Administrator',
-    true,
-    now,
-    now,
-  ]]);
-  sheet.setFrozenRows(1);
-  sheet.getRange(1, 1, 1, headers.length).setFontWeight('bold').setBackground('#1e2925').setFontColor('#ffffff');
-  sheet.autoResizeColumns(1, headers.length);
-  return 'Auth sheet created. Admin row seeded; change the identifier/password hash when ready.';
+  // Temporary fixed admin seed. Change this row later from 00_Auth_Users.
+  const identifier = 'zakirhossan97@gmail.com';
+  const passwordHash = '7f9470af58312fade4dfed4f6f58faf1c7f1de55fec957b4059fd3b67261a360';
+  sheet.getRange(2, 1, 1, headers.length).setValues([[identifier, passwordHash, 'admin', 'Administrator', true, now, now]]);
+  formatSheet_(sheet, headers.length);
+  return '00_Auth_Users created and admin seeded.';
+}
+
+function setupDatabase() {
+  Object.keys(SHEETS).forEach(function (key) {
+    const sheet = getSheet_(key);
+    if (!sheet.getLastRow()) {
+      const headers = SHEET_HEADERS[key] || [];
+      if (headers.length) sheet.getRange(1, 1, 1, headers.length).setValues([headers]);
+      formatSheet_(sheet, headers.length);
+    }
+  });
+  const auth = getSheet_('auth');
+  if (auth.getLastRow() < 2) setupAuthSheet();
+  return 'ZiyanaShop database schema is ready.';
 }
 
 function doGet() {
@@ -61,9 +66,7 @@ function doPost(event) {
     return json_({ ok: false, error: 'Invalid JSON body' });
   }
 
-  if (body.action === 'authenticate') {
-    return json_(authenticate_(body.identifier, body.password));
-  }
+  if (body.action === 'authenticate') return json_(authenticate_(body.identifier, body.password));
 
   if (body.token !== PropertiesService.getScriptProperties().getProperty('API_TOKEN')) {
     return json_({ ok: false, error: 'Unauthorized' });
@@ -82,23 +85,49 @@ function doPost(event) {
 function authenticate_(identifier, password) {
   const normalized = String(identifier || '').trim().toLowerCase();
   if (!normalized || !password) return { ok: false, error: 'Email/phone or password is incorrect.' };
-  const sheet = getSheet_('auth');
-  if (!sheet.getLastRow()) setupAuthSheet();
-  const rows = readValue_(sheet, true);
-  const user = rows.find(function (row) {
+  const authSheet = getSheet_('auth');
+  if (!authSheet.getLastRow()) setupAuthSheet();
+  let rows = readValue_(authSheet, true);
+  let user = rows.find(function (row) {
     return String(row.identifier || '').trim().toLowerCase() === normalized && String(row.active).toLowerCase() !== 'false';
   });
+
+  // Existing customers are migrated lazily into 00_Auth_Users on first successful login.
+  if (!user) {
+    const customers = readValue_(getSheet_('customers'), true);
+    const customer = customers.find(function (row) {
+      return String(row.email || '').trim().toLowerCase() === normalized || String(row.phone || '').trim() === String(identifier || '').trim();
+    });
+    if (customer && customer.password && String(customer.password) === String(password)) {
+      const now = new Date().toISOString();
+      const migrated = {
+        identifier: String(customer.email || customer.phone || normalized).trim().toLowerCase(),
+        passwordHash: hashPassword_(password),
+        role: 'user',
+        name: customer.name || 'Customer',
+        active: true,
+        createdAt: customer.createdAt || now,
+        updatedAt: now,
+      };
+      appendRecord_('auth', migrated);
+      user = migrated;
+    }
+  }
+
   if (!user || String(user.passwordHash || '') !== hashPassword_(password)) {
     return { ok: false, error: 'Email/phone or password is incorrect.' };
   }
-  return {
-    ok: true,
-    user: {
-      identifier: user.identifier,
-      name: user.name || 'Customer',
-      role: user.role || 'user',
-    },
-  };
+
+  const role = String(user.role || 'user').toLowerCase() === 'admin' ? 'admin' : 'user';
+  let profile = { identifier: user.identifier, name: user.name || 'Customer', role };
+  if (role === 'user') {
+    const customers = readValue_(getSheet_('customers'), true);
+    const customer = customers.find(function (row) {
+      return String(row.email || '').trim().toLowerCase() === normalized || String(row.phone || '').trim() === String(identifier || '').trim();
+    });
+    if (customer) profile = Object.assign({}, customer, { identifier: user.identifier, role: 'user' });
+  }
+  return { ok: true, user: profile };
 }
 
 function hashPassword_(password) {
@@ -120,7 +149,11 @@ function readDatabase_() {
       writeValue_(key, result[key]);
     } else {
       result[key] = readValue_(sheet, key !== 'settings');
-      if (!sheet.getLastRow() || !sheet.getLastColumn()) writeValue_(key, result[key]);
+      if (!sheet.getLastRow() || !sheet.getLastColumn()) {
+        const headers = SHEET_HEADERS[key] || [];
+        if (headers.length) sheet.getRange(1, 1, 1, headers.length).setValues([headers]);
+        formatSheet_(sheet, headers.length);
+      }
     }
   });
   return result;
@@ -128,7 +161,7 @@ function readDatabase_() {
 
 function migrateExistingSheets() {
   const data = {};
-  Object.keys(SHEETS).filter(function (key) { return key !== 'auth'; }).forEach(function (key) {
+  Object.keys(SHEETS).filter(function (key) { return key !== 'auth' && key !== 'campaigns' && key !== 'salesReports'; }).forEach(function (key) {
     const sheet = getSheet_(key);
     const legacy = readLegacyValue_(sheet);
     data[key] = legacy.found ? legacy.value : readValue_(sheet, key !== 'settings');
@@ -144,9 +177,6 @@ function migrateExistingSheets() {
   data.tracking = mergeRecords_(toArray_(data.tracking).concat(orders.map(function (order) {
     return { orderNumber: order.number, number: order.number, status: order.status, step: order.step || 0, courier: order.courier || '', trackingNumber: order.trackingNumber || '', trackingUrl: order.trackingUrl || '', createdAt: order.date };
   })), ['orderNumber', 'number']);
-  data.campaigns = mergeRecords_(toArray_(data.campaigns).concat(orders.map(function (order) {
-    return { number: order.number, date: order.date, name: order.name, phone: order.phone, subtotal: order.subtotal, shipping: order.shipping, total: order.total, payment: order.payment, status: order.status, items: order.items, createdAt: order.date };
-  })), ['number']);
 
   Object.keys(data).forEach(function (key) {
     writeValue_(key, key === 'settings' ? data[key] : toArray_(data[key]));
@@ -155,21 +185,21 @@ function migrateExistingSheets() {
 
 function migrateSheetsToTables() {
   migrateExistingSheets();
+  return 'Legacy data migrated. 12_Campaigns and 17_Sales_Report are kept separate.';
+}
+
+function appendRecord_(key, record) {
+  const sheet = getSheet_(key);
+  const existing = readValue_(sheet, true);
+  writeValue_(key, existing.concat([record]));
 }
 
 function writeValue_(key, value) {
   const sheet = getSheet_(key);
   const rows = Array.isArray(value) ? value : [value];
-  const records = rows.filter(function (row) {
-    return row !== null && row !== undefined && typeof row === 'object';
-  });
+  const records = rows.filter(function (row) { return row !== null && row !== undefined && typeof row === 'object'; });
   const headers = uniqueHeaders_((SHEET_HEADERS[key] || []).concat(collectHeaders_(records)));
-  const table = [headers].concat(records.map(function (record) {
-    return headers.map(function (header) {
-      return toCellValue_(record[header]);
-    });
-  }));
-
+  const table = [headers].concat(records.map(function (record) { return headers.map(function (header) { return toCellValue_(record[header]); }); }));
   sheet.clearContents();
   if (table.length && headers.length) {
     const dataRange = sheet.getRange(1, 1, table.length, headers.length);
@@ -186,13 +216,17 @@ function writeValue_(key, value) {
   }
 }
 
+function formatSheet_(sheet, columnCount) {
+  if (!columnCount) return;
+  const headerRange = sheet.getRange(1, 1, 1, columnCount);
+  headerRange.setFontWeight('bold').setBackground('#1e2925').setFontColor('#ffffff');
+  sheet.setFrozenRows(1);
+  sheet.autoResizeColumns(1, columnCount);
+}
+
 function uniqueHeaders_(headers) {
   const seen = {};
-  return headers.filter(function (header) {
-    if (!header || seen[header]) return false;
-    seen[header] = true;
-    return true;
-  });
+  return headers.filter(function (header) { if (!header || seen[header]) return false; seen[header] = true; return true; });
 }
 
 function mergeRecords_(records, identityFields) {
@@ -202,12 +236,8 @@ function mergeRecords_(records, identityFields) {
     if (!record || typeof record !== 'object') return;
     const identity = identityFields.map(function (field) { return String(record[field] || '').trim(); }).filter(Boolean).join('|');
     if (!identity) return;
-    if (indexes[identity] === undefined) {
-      indexes[identity] = result.length;
-      result.push(record);
-    } else {
-      result[indexes[identity]] = Object.assign({}, result[indexes[identity]], record);
-    }
+    if (indexes[identity] === undefined) { indexes[identity] = result.length; result.push(record); }
+    else result[indexes[identity]] = Object.assign({}, result[indexes[identity]], record);
   });
   return result;
 }
@@ -216,24 +246,14 @@ function readValue_(sheet, expectArray) {
   const lastRow = sheet.getLastRow();
   const lastColumn = sheet.getLastColumn();
   if (!lastRow || !lastColumn) return expectArray ? [] : null;
-
   const values = sheet.getRange(1, 1, lastRow, lastColumn).getValues();
   if (lastRow === 1 && lastColumn === 1 && typeof values[0][0] === 'string') {
-    try {
-      return JSON.parse(values[0][0]);
-    } catch (error) {
-      return values[0][0];
-    }
+    try { return JSON.parse(values[0][0]); } catch (error) { return values[0][0]; }
   }
-
   const headers = values[0].map(function (header) { return String(header || '').trim(); });
-  const records = values.slice(1).filter(function (row) {
-    return row.some(function (cell) { return cell !== '' && cell !== null; });
-  }).map(function (row) {
+  const records = values.slice(1).filter(function (row) { return row.some(function (cell) { return cell !== '' && cell !== null; }); }).map(function (row) {
     const record = {};
-    headers.forEach(function (header, index) {
-      if (header) record[header] = fromCellValue_(row[index]);
-    });
+    headers.forEach(function (header, index) { if (header) record[header] = fromCellValue_(row[index]); });
     return record;
   });
   return expectArray ? records : records[0] || null;
@@ -242,50 +262,13 @@ function readValue_(sheet, expectArray) {
 function readLegacyValue_(sheet) {
   const raw = sheet.getRange('A1').getValue();
   if (typeof raw !== 'string' || !raw.trim()) return { found: false, value: null };
-  try {
-    const value = JSON.parse(raw);
-    if (value && typeof value === 'object') return { found: true, value: value };
-  } catch (error) {
-    return { found: false, value: null };
-  }
+  try { const value = JSON.parse(raw); if (value && typeof value === 'object') return { found: true, value: value }; }
+  catch (error) { return { found: false, value: null }; }
   return { found: false, value: null };
 }
-
-function toArray_(value) {
-  return Array.isArray(value) ? value : value && typeof value === 'object' ? [value] : [];
-}
-
-function collectHeaders_(records) {
-  const seen = {};
-  records.forEach(function (record) {
-    Object.keys(record).forEach(function (key) { seen[key] = true; });
-  });
-  return Object.keys(seen);
-}
-
-function toCellValue_(value) {
-  if (value === null || value === undefined) return '';
-  if (typeof value === 'object') return JSON.stringify(value);
-  return value;
-}
-
-function fromCellValue_(value) {
-  if (typeof value !== 'string') return value;
-  const text = value.trim();
-  if (!text) return '';
-  try {
-    return JSON.parse(text);
-  } catch (error) {
-    return value;
-  }
-}
-
-function getSheet_(key) {
-  const name = SHEETS[key];
-  const spreadsheet = SpreadsheetApp.getActiveSpreadsheet();
-  return spreadsheet.getSheetByName(name) || spreadsheet.insertSheet(name);
-}
-
-function json_(value) {
-  return ContentService.createTextOutput(JSON.stringify(value)).setMimeType(ContentService.MimeType.JSON);
-}
+function toArray_(value) { return Array.isArray(value) ? value : value && typeof value === 'object' ? [value] : []; }
+function collectHeaders_(records) { const seen = {}; records.forEach(function (record) { Object.keys(record).forEach(function (key) { seen[key] = true; }); }); return Object.keys(seen); }
+function toCellValue_(value) { if (value === null || value === undefined) return ''; if (typeof value === 'object') return JSON.stringify(value); return value; }
+function fromCellValue_(value) { if (typeof value !== 'string') return value; const text = value.trim(); if (!text) return ''; try { return JSON.parse(text); } catch (error) { return value; } }
+function getSheet_(key) { const name = SHEETS[key]; const spreadsheet = SpreadsheetApp.getActiveSpreadsheet(); return spreadsheet.getSheetByName(name) || spreadsheet.insertSheet(name); }
+function json_(value) { return ContentService.createTextOutput(JSON.stringify(value)).setMimeType(ContentService.MimeType.JSON); }
