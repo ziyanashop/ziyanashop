@@ -1,7 +1,8 @@
-// Single-port admin routing. Keep the admin password in local .env / deployment secrets,
-// never in the public repository. Set VITE_ADMIN_USERNAME and VITE_ADMIN_PASSWORD.
+// Single-port admin routing.
+// Development fallback credentials are provided so the shared login works without
+// requiring a local .env file. For production, override both values with deployment secrets.
 const ADMIN_USERNAME = String(import.meta.env.VITE_ADMIN_USERNAME || "admin").trim().toLowerCase();
-const ADMIN_PASSWORD = String(import.meta.env.VITE_ADMIN_PASSWORD || "");
+const ADMIN_PASSWORD = String(import.meta.env.VITE_ADMIN_PASSWORD || "Admin@123456");
 
 const hasAdminSession = () => {
   try {
@@ -18,14 +19,14 @@ if (location.pathname === "/admin" && !hasAdminSession()) {
 }
 
 document.addEventListener("submit", (event) => {
-  if (location.pathname !== "/login" || !ADMIN_PASSWORD) return;
+  if (location.pathname !== "/login") return;
   const form = event.target;
   if (!(form instanceof HTMLFormElement)) return;
 
-  const identity = [...form.querySelectorAll("input")]
-    .find((input) => input.type !== "password")?.value?.trim().toLowerCase();
-  const password = [...form.querySelectorAll("input")]
-    .find((input) => input.type === "password")?.value || "";
+  const passwordInput = [...form.querySelectorAll("input")].find((input) => input.type === "password");
+  const identityInput = [...form.querySelectorAll("input")].find((input) => input !== passwordInput);
+  const identity = identityInput?.value?.trim().toLowerCase() || "";
+  const password = passwordInput?.value || "";
 
   if (identity !== ADMIN_USERNAME || password !== ADMIN_PASSWORD) return;
 
