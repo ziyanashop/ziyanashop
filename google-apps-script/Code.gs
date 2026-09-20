@@ -8,6 +8,7 @@ const SHEETS = {
   tracking: '15_Tracking',
   expenses: '16_Expenses',
   campaigns: '17_Sales_Report',
+  auth: '00_Auth_Users',
 };
 
 const SHEET_HEADERS = {
@@ -20,7 +21,33 @@ const SHEET_HEADERS = {
   tracking: ['orderNumber', 'number', 'status', 'step', 'courier', 'trackingNumber', 'trackingUrl', 'createdAt', 'updatedAt'],
   expenses: ['category', 'amount', 'description', 'date'],
   campaigns: ['number', 'date', 'name', 'phone', 'subtotal', 'shipping', 'total', 'payment', 'status', 'items', 'createdAt'],
+  auth: ['identifier', 'passwordHash', 'role', 'name', 'active', 'createdAt', 'updatedAt'],
 };
+
+// One-time setup: run setupAuthSheet() from Apps Script after deploying this file.
+// It creates the auth sheet and seeds the temporary admin account. Change the row later in Sheets.
+function setupAuthSheet() {
+  const sheet = getSheet_('auth');
+  const headers = SHEET_HEADERS.auth;
+  sheet.clearContents();
+  sheet.getRange(1, 1, 1, headers.length).setValues([headers]);
+  const adminIdentifier = 'zakirhossan97@gmail.com';
+  const adminPassword = 'Admin@123456';
+  const now = new Date().toISOString();
+  sheet.getRange(2, 1, 1, headers.length).setValues([[
+    adminIdentifier,
+    hashPassword_(adminPassword),
+    'admin',
+    'Administrator',
+    true,
+    now,
+    now,
+  ]]);
+  sheet.setFrozenRows(1);
+  sheet.getRange(1, 1, 1, headers.length).setFontWeight('bold').setBackground('#1e2925').setFontColor('#ffffff');
+  sheet.autoResizeColumns(1, headers.length);
+  return 'Auth sheet created. Admin row seeded; change the identifier/password hash when ready.';
+}
 
 function doGet() {
   return json_(readDatabase_());
@@ -33,10 +60,15 @@ function doPost(event) {
   } catch (error) {
     return json_({ ok: false, error: 'Invalid JSON body' });
   }
+
+  if (body.action === 'authenticate') {
+    return json_(authenticate_(body.identifier, body.password));
+  }
+
   if (body.token !== PropertiesService.getScriptProperties().getProperty('API_TOKEN')) {
     return json_({ ok: false, error: 'Unauthorized' });
   }
-  if (!Object.prototype.hasOwnProperty.call(SHEETS, body.key)) {
+  if (!Object.prototype.hasOwnProperty.call(SHEETS, body.key) || body.key === 'auth') {
     return json_({ ok: false, error: 'Unsupported data key' });
   }
   try {
@@ -47,9 +79,40 @@ function doPost(event) {
   return json_({ ok: true, key: body.key });
 }
 
+function authenticate_(identifier, password) {
+  const normalized = String(identifier || '').trim().toLowerCase();
+  if (!normalized || !password) return { ok: false, error: 'Email/phone or password is incorrect.' };
+  const sheet = getSheet_('auth');
+  if (!sheet.getLastRow()) setupAuthSheet();
+  const rows = readValue_(sheet, true);
+  const user = rows.find(function (row) {
+    return String(row.identifier || '').trim().toLowerCase() === normalized && String(row.active).toLowerCase() !== 'false';
+  });
+  if (!user || String(user.passwordHash || '') !== hashPassword_(password)) {
+    return { ok: false, error: 'Email/phone or password is incorrect.' };
+  }
+  return {
+    ok: true,
+    user: {
+      identifier: user.identifier,
+      name: user.name || 'Customer',
+      role: user.role || 'user',
+    },
+  };
+}
+
+function hashPassword_(password) {
+  const bytes = Utilities.computeDigest(Utilities.DigestAlgorithm.SHA_256, String(password), Utilities.Charset.UTF_8);
+  return bytes.map(function (byte) {
+    const value = byte < 0 ? byte + 256 : byte;
+    return ('0' + value.toString(16)).slice(-2);
+  }).join('');
+}
+
 function readDatabase_() {
   const result = {};
   Object.keys(SHEETS).forEach(function (key) {
+    if (key === 'auth') return;
     const sheet = getSheet_(key);
     const legacy = readLegacyValue_(sheet);
     if (legacy.found) {
@@ -65,7 +128,7 @@ function readDatabase_() {
 
 function migrateExistingSheets() {
   const data = {};
-  Object.keys(SHEETS).forEach(function (key) {
+  Object.keys(SHEETS).filter(function (key) { return key !== 'auth'; }).forEach(function (key) {
     const sheet = getSheet_(key);
     const legacy = readLegacyValue_(sheet);
     data[key] = legacy.found ? legacy.value : readValue_(sheet, key !== 'settings');
@@ -85,7 +148,7 @@ function migrateExistingSheets() {
     return { number: order.number, date: order.date, name: order.name, phone: order.phone, subtotal: order.subtotal, shipping: order.shipping, total: order.total, payment: order.payment, status: order.status, items: order.items, createdAt: order.date };
   })), ['number']);
 
-  Object.keys(SHEETS).forEach(function (key) {
+  Object.keys(data).forEach(function (key) {
     writeValue_(key, key === 'settings' ? data[key] : toArray_(data[key]));
   });
 }
